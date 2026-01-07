@@ -1,0 +1,182 @@
+import express from "express"
+import http from "http"
+import { Server } from "socket.io"
+import jwt from "jsonwebtoken"
+import bcrypt from "bcrypt"
+
+const app = express()
+const server = http.createServer(app)
+const io = new Server(server)
+
+app.use(express.json())
+
+/* ====== DANE (IN-MEMORY) ====== */
+const USERS = []
+const SECRET = "ULTRA_SECRET_KEY"
+
+/* ====== AUTH ====== */
+app.post("/api/register", async (req,res)=>{
+  const hash = await bcrypt.hash(req.body.password,10)
+  USERS.push({ email:req.body.email, password:hash, role:"user" })
+  res.sendStatus(201)
+})
+
+app.post("/api/login", async (req,res)=>{
+  const user = USERS.find(u=>u.email===req.body.email)
+  if(!user || !await bcrypt.compare(req.body.password,user.password))
+    return res.sendStatus(401)
+  const token = jwt.sign({ email:user.email, role:user.role }, SECRET)
+  res.json({ token })
+})
+
+function auth(req,res,next){
+  try {
+    req.user = jwt.verify(req.headers.authorization, SECRET)
+    next()
+  } catch {
+    res.sendStatus(401)
+  }
+}
+
+/* ====== API ====== */
+app.get("/api/dashboard", auth, (req,res)=>{
+  res.json({
+    cpu: (Math.random()*100).toFixed(1),
+    ram: (Math.random()*100).toFixed(1),
+    users: USERS.length
+  })
+})
+
+app.post("/api/ai", auth, (req,res)=>{
+  res.json({ answer:"🤖 AI odpowiedź (mock)" })
+})
+
+/* ====== CHAT ====== */
+io.on("connection", socket=>{
+  socket.on("msg", msg=>{
+    io.emit("msg", msg)
+  })
+})
+
+/* ====== FRONTEND ====== */
+app.get("/", (req,res)=>{
+res.send(`
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>ULTRA ADVANCED APP</title>
+<style>
+body{
+  margin:0;font-family:system-ui;
+  background:linear-gradient(135deg,#020617,#0f172a);
+  color:#e5e7eb;
+}
+.card{
+  background:rgba(2,6,23,.85);
+  backdrop-filter:blur(12px);
+  padding:2rem;border-radius:16px;
+  max-width:420px;margin:5rem auto;
+  box-shadow:0 0 40px #000;
+}
+input,button{
+  width:100%;padding:.8rem;margin-top:1rem;
+  border-radius:8px;border:none;
+}
+button{background:#38bdf8;color:#020617;font-weight:bold}
+.dashboard{
+  display:grid;gap:1rem;
+}
+#chat{max-height:150px;overflow:auto}
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const app = document.getElementById("app")
+const socket = io()
+
+let token = localStorage.getItem("token")
+
+function login(){
+  fetch("/api/login",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      email:email.value,
+      password:password.value
+    })
+  }).then(r=>r.json()).then(d=>{
+    token=d.token
+    localStorage.setItem("token",token)
+    dashboard()
+  })
+}
+
+function register(){
+  fetch("/api/register",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      email:email.value,
+      password:password.value
+    })
+  }).then(()=>login())
+}
+
+function dashboard(){
+  fetch("/api/dashboard",{ headers:{Authorization:token}})
+  .then(r=>r.json()).then(d=>{
+    app.innerHTML=\`
+    <div class="card dashboard">
+      <h2>Dashboard</h2>
+      <p>CPU: \${d.cpu}%</p>
+      <p>RAM: \${d.ram}%</p>
+      <p>Użytkownicy: \${d.users}</p>
+
+      <input id="msg" placeholder="Wiadomość">
+      <button onclick="send()">Wyślij</button>
+      <div id="chat"></div>
+
+      <button onclick="ai()">Zapytaj AI</button>
+      <div id="ai"></div>
+    </div>\`
+  })
+}
+
+function send(){
+  socket.emit("msg", msg.value)
+}
+
+socket.on("msg", m=>{
+  chat.innerHTML+=\`<p>\${m}</p>\`
+})
+
+function ai(){
+  fetch("/api/ai",{
+    method:"POST",
+    headers:{Authorization:token}
+  }).then(r=>r.json()).then(d=>{
+    ai.innerText=d.answer
+  })
+}
+
+if(token) dashboard()
+else app.innerHTML=\`
+<div class="card">
+<h2>Logowanie / Rejestracja</h2>
+<input id="email" placeholder="Email">
+<input id="password" type="password" placeholder="Hasło">
+<button onclick="login()">Zaloguj</button>
+<button onclick="register()">Zarejestruj</button>
+</div>\`
+</script>
+</body>
+</html>
+`)
+})
+
+server.listen(3000,()=>console.log("🔥 http://localhost:3000"))
